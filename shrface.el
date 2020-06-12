@@ -48,7 +48,6 @@
 (require 'shr)
 (require 'org-faces)
 (require 'outline)
-(require 'org-indent)
 (require 'compile)
 
 (ignore-errors
@@ -59,7 +58,8 @@
   (require 'all-the-icons)
   (require 'ivy)
   (require 'helm)
-  (require 'helm-utils))
+  (require 'helm-utils)
+  )
 
 ;;; shrface
 
@@ -188,16 +188,6 @@ The following features are also disabled:
     ;; (code   . shrface-tag-code)
     )
   "Alist of shrface supported faces except experimental faces.")
-
-(defvar shrface-href-collected-list nil
-  "Global list to save the collected href items.
-Used when we run `shrface-links' or `shrface-links-counsel'.
-Used for later analysis, sorting, exporting etc.")
-
-(defvar shrface-headline-collected-list nil
-  "Global list to save the collected href items.
-Used when we run `shrface-headline-counsel'.
-Used for later analysis, sorting, exporting etc.")
 
 (defface shrface-href-face '((t :inherit org-link))
   "Default <href> face if `shrface-href-versatile' is nil"
@@ -422,15 +412,6 @@ sure that we are at the beginning of the line."
            shrface-bullets-bullet-list
            t) "\\( +\\)"))
 
-(defun shrface-imenu-regexp-bol ()
-  "TODO: Regexp to match shrface headlines.
-This is similar to `shrface-outline-regexp' but additionally makes
-sure that we are at the beginning of the line."
-  (concat "^\\(?: ?+\\)"
-          (regexp-opt
-           shrface-bullets-bullet-list
-           t) "\\( .*\\)$"))
-
 (defun shrface-clear (DOM)
   "Clear the `shrface-headline-number'.
 Argument DOM The DOM."
@@ -589,7 +570,8 @@ Argument DOM dom."
         (insert " "))
       (put-text-property start (1+ start) 'shr-target-id shr-target-id))
     (when url
-      (shrface-shr-urlify (or shr-start start) (shr-expand-url url) title))))
+      (shrface-shr-urlify (or shr-start start) (shr-expand-url url) title))
+    ))
 
 (defun shrface-tag-li (dom)
   "Fontize tag li.
@@ -626,38 +608,6 @@ Argument DOM dom."
   (shrface-shr-fontize-dom dom '(comment t face shrface-description-list-term-face))
   (shr-ensure-newline))
 
-;;;###autoload
-(defun shrface-imenu-get-tree ()
-  "Produce the index for Imenu."
-  (dolist (x org-imenu-markers) (move-marker x nil))
-  (setq org-imenu-markers nil)
-  (org-with-wide-buffer
-   (goto-char (point-max))
-   (let* ((re (shrface-imenu-regexp-bol))
-          (subs (make-vector (1+ shrface-imenu-depth) nil))
-          (last-level 0))
-     (while (re-search-backward re nil t)
-       ;; (message (int-to-string (shrface-level (match-string 1))))
-       (let ((level (1- (funcall shrface-level)))
-             (headline (match-string 2)))
-         (message (int-to-string level ))
-         (message headline)
-         ;; (when  (<= level shrface-imenu-depth)
-         (when (and (<= level shrface-imenu-depth) (org-string-nw-p headline))
-           (let* ((m (point-marker))
-                  (item (propertize headline 'org-imenu-marker m 'org-imenu t)))
-             (message item)
-             (push m org-imenu-markers)
-             (if (>= level last-level)
-                 (push (cons item m) (aref subs level))
-               (push (cons item
-                           (cl-mapcan #'identity (cl-subseq subs (1+ level))))
-                     (aref subs level))
-               (cl-loop for i from (1+ level) to shrface-imenu-depth
-                        do (aset subs i nil)))
-             (setq last-level level)))))
-     (aref subs 0))))
-
 (defun shrface-level ()
   "Function of no args to compute a header's nesting level in an outline."
   (1+ (cl-position (match-string 1) shrface-bullets-bullet-list :test 'equal)))
@@ -691,23 +641,21 @@ Argument DOM dom."
 `shrface-mode' will disable if `shrface-toggle-bullets' is Non-nil.
 1. imenu
 2. outline-minor-mode
-3. org-indent-mode"
+"
   :group 'shrface
   (cond
    ((and shrface-mode (not shrface-toggle-bullets))
     ;; (shrface-basic)
     ;; (shrface-trial)
     (shrface-regexp)
-    (setq imenu-create-index-function #'shrface-imenu-get-tree)
     (outline-minor-mode)
-    (org-indent-mode)
     (run-hooks 'shrface-mode-hook))
    (t
     ;; (shrface-resume)
     ;; (setq shr-bullet "* ")
     (setq imenu-create-index-function nil)
     (outline-minor-mode -1)
-    (org-indent-mode -1))))
+    )))
 
 (defun shrface-basic()
   "Enable the shrface faces.
@@ -724,8 +672,6 @@ Need to be called once before loading eww, nov.el, dash-docs, mu4e, after shr."
   ;; setup occur flash
   (add-hook 'occur-mode-find-occurrence-hook #'shrface-occur-flash)
 
-  ;; setup `shrface-links-counsel' ivy actions
-  (shrface-links-counsel-set-actions)
 
   ;; add a simple advice to clear the counter every time reload the shr buffer.
   (advice-add 'shr-insert-document :after #'shrface-clear))
@@ -783,220 +729,7 @@ FIXME: If variable `mu4e-view-mode' is t, bullets will disable/enable globally."
          (when (fboundp 'mu4e-view-refresh)
            (mu4e-view-refresh)))))
 
-;;; shrface-analysis
-;; `shrface-links'
 
-(defun shrface-links()
-  "`shrface-links' the links anaysis feature of `shrface-analysis'.
-Collect the positions of href links in the
-current buffer and display the clickable result in
-*shrface-links* buffer"
-  (interactive)
-  (shrface-href-collect-all)
-  (let ((buf-name "*shrface-links*") occur-buf)
-    (setq occur-buf (get-buffer-create buf-name))
-    (when (buffer-live-p occur-buf)
-      (switch-to-buffer-other-window occur-buf)
-      (read-only-mode)
-      (outline-minor-mode)
-      (org-indent-mode)
-      (goto-char (point-min)))))
-
-(defun shrface-href-collect-all ()
-  "OBSELETE Collect all positions of URLs in the current buffer.
-The value of the `shrface-href-collected-list' is returned."
-  (setq shrface-href-collected-list nil) ; TODO use local list instead
-  (let ((buf-name "*shrface-links*") occur-buf)
-    (setq occur-buf (get-buffer-create buf-name))
-    (with-current-buffer occur-buf
-      (read-only-mode -1)
-      (shrface-regexp)
-      (erase-buffer))
-    ;; (plist-get (cdr '(image :type imagemagick :file "/var/folders/st/mkq0gxld3rv39t6y6zv45j540000gn/T/nov-cKFscX.epub/EPUB/media/file6" :scale 1 :ascent 100 :max-width 1382 :max-height 820)) :file)
-    ;; (shrface-href-collect shrface-nov-image-original-property shrface-nov-image-original-property "images" occur-buf) ; TODO: collect nov.el images links
-    (shrface-collect shrface-eww-image-property shrface-eww-image-property "images" occur-buf shrface-href-collected-list) ; collect internet images links
-    (shrface-collect shrface-href-property shrface-href-https-face "https" occur-buf shrface-href-collected-list) ; collect https links
-    (shrface-collect shrface-href-property shrface-href-http-face "http" occur-buf shrface-href-collected-list) ; collect http links
-    (shrface-collect shrface-href-property shrface-href-file-face "file" occur-buf shrface-href-collected-list) ; collect file links
-    (shrface-collect shrface-href-property shrface-href-mailto-face "mailto" occur-buf shrface-href-collected-list) ; collect mailto links
-    (shrface-collect shrface-href-property shrface-href-other-face "other" occur-buf shrface-href-collected-list))) ; collect other links
-
-(defun shrface-href-collect-all-ordered ()
-  "Collect all positions of URLs in the current buffer in order.
-The value of the `shrface-href-collected-list' is returned."
-  (setq shrface-href-collected-list nil) ; TODO use local list instead
-  (let ((buf-name "*shrface-links*") occur-buf)
-    (setq occur-buf (get-buffer-create buf-name))
-    (with-current-buffer occur-buf
-      (read-only-mode -1)
-      (shrface-regexp)
-      (erase-buffer))
-    (shrface-collect shrface-href-property shrface-href-follow-link-property "All" occur-buf shrface-href-collected-list)))
-
-(defun shrface-collect (property face title buf-name collected-list)
-  "Collect the matched text elements in the current buffer.
-Argument PROPERTY the property to be searched.
-Argument FACE the property to be collected.
-Argument TITLE the section title.
-Argument BUF-NAME the buffer the results reside.
-Argument COLLECTED-LIST the list to be returned of collected items ."
-
-  ;; check whether `face' exist in the whole buffer or not
-  (if (text-property-not-all (point-min) (point-max) `,face nil)
-      (with-current-buffer buf-name
-        (let (beg end)
-          (setq beg (point))
-          (insert (propertize (concat (shrface-bullets-level-string 1) " " title "\n") 'face 'shrface-h1-face))
-          (setq end (point))
-          (let ((map (make-sparse-keymap)))
-            (define-key map (kbd "<tab>") 'org-cycle)
-            (define-key map (kbd "S-<tab>") 'org-shifttab)
-            (put-text-property beg end 'keymap map)))))
-
-  (save-excursion
-    (save-restriction
-      (narrow-to-region
-       (point-min)
-       (point-max))
-      (goto-char (point-min))
-      (let (beg end buf string url start final)
-        (setq buf (current-buffer))
-        (setq end
-              (if (get-text-property (point) `,face)
-                  (point)
-                (text-property-any
-                 (point) (point-max) `,face nil)))
-
-        (while (setq beg (text-property-not-all
-                          end (point-max) `,face nil))
-          (goto-char beg)
-          (setq url (get-text-property beg `,property))
-
-          ;; TODO collect nov.el images links
-          ;; (equal (car (get-text-property (point) 'display)) 'image)
-          ;; (if (equal `,property 'display)
-          ;;     (if (equal (car (get-text-property beg `,property)) 'image)
-          ;;         (setq url (plist-get (cdr (get-text-property beg `,property)) :file))
-          ;;       (setq face nil)    ; just set `face' nil to skip the following checking
-          ;;       )
-          ;;   (setq url (get-text-property beg `,property)))
-
-          ;; TODO Disable, because it will make eww loop and hang
-          ;; Skip leading newlines in the next link text.  They make things very
-          ;; ugly when running `shrface-analysis' since the characters to jump to
-          ;; each link will be displayed on the line before its visible text.
-          ;; (skip-chars-forward "\n")
-          ;; Handle the case where a link is all newlines by skipping them.
-
-          ;; save the begining location to `beg'
-          (setq beg (point))
-
-          ;; Extract the current point text properties if it matched by giving
-          ;; property `face', and insert it to `buf-name'
-          (if (get-text-property (point) `,face)
-              (progn
-                (setq end (next-single-property-change (point) `,face nil (point-max)))
-                ;; When link at the end of buffer, end will be set to nil.
-                (if (not end)
-                    (setq end (point-max)))
-
-                (setq string (buffer-substring-no-properties beg end)) ; save the url title
-
-                (with-current-buffer buf-name
-                  (setq start (point)) ; save the start location before insertion
-                  (if (stringp url)
-                      (insert
-                       (propertize
-                        (if (fboundp 'all-the-icons-icon-for-url)
-                            (all-the-icons-icon-for-url url :height 1.1)
-                          "")
-                        'mouse-face 'shrface-links-mouse-face
-                        'help-echo "mouse-1: go to this occurrence; mouse-2: copy link; mouse-3: browse url")))
-                  (insert
-                   (propertize
-                    (format " %s" string)
-                    'face 'shrface-links-title-face
-                    'mouse-face 'shrface-links-mouse-face
-                    'help-echo "mouse-1: go to this occurrence; mouse-2: copy link; mouse-3: browse url") "\n  ")
-                  ;; (insert (propertize "  " 'face 'shrface-h3-face))
-                  (insert
-                   (concat
-                    (propertize
-                     (format "%s" url)
-                     'face 'shrface-links-url-face
-                     'mouse-face 'shrface-links-mouse-face
-                     'help-echo "mouse-1: go to this occurrence; mouse-2: copy link; mouse-3: browse url") "\n"))
-                  ;; (insert "\n")
-                  (setq final (point)) ; save the final location before insertion
-
-                  ;; Put keymap and text properties to the texts between `start' to `final'
-                  (let ((map (make-sparse-keymap)))
-                    (define-key map [mouse-1] 'shrface-mouse-1)
-                    (define-key map [mouse-2] 'shrface-mouse-2)
-                    (define-key map [mouse-3] 'shrface-mouse-3)
-                    (define-key map (kbd "<RET>") 'shrface-ret)
-                    (put-text-property start final 'keymap map))
-                  (put-text-property start final 'shrface-buffer buf)
-                  (put-text-property start final 'shrface-url url)
-                  (put-text-property start final 'shrface-beg beg)
-                  (put-text-property start final 'shrface-end end))
-                (push (list string url beg end) collected-list)))))))
-  collected-list)
-
-(defun shrface-mouse-1 (event)
-  "Visit the location click on.
-Argument EVENT mouse event."
-  (interactive "e")
-  ;; (message "click mouse-1")
-  ;; (text-properties-at (point))
-  ;; (message (get-text-property (point) 'shrface-url))
-  (let ((window (posn-window (event-end event)))
-        (pos (posn-point (event-end event))))
-    (if (not (windowp window))
-        (error "No URL chosen"))
-    (with-current-buffer (window-buffer window)
-      (goto-char pos)
-      (let ((beg (get-text-property (point) 'shrface-beg))
-            (end (get-text-property (point) 'shrface-end))
-            (buffer (get-text-property (point) 'shrface-buffer)))
-        (switch-to-buffer-other-window buffer)
-        (remove-overlays)
-        (goto-char beg)
-        ;; (setq xx (make-overlay beg end))
-        ;; (overlay-put xx 'face '(:background "gray" :foreground "black"))
-        ;; (overlay-put xx 'face 'shrface-highlight)
-        ;; (set-mark beg)
-        ;; (goto-char end)
-        (shrface-flash-show beg end 'shrface-highlight 0.5)
-        (overlay-put compilation-highlight-overlay 'window (selected-window))))))
-
-(defun shrface-mouse-2 (event)
-  "Copy the url click on.
-Argument EVENT mouse event."
-  (interactive "e")
-  ;; (message "click mouse-2")
-  (let ((window (posn-window (event-end event)))
-        (pos (posn-point (event-end event))))
-    (if (not (windowp window))
-        (error "No URL chosen"))
-    (with-current-buffer (window-buffer window)
-      (goto-char pos)
-      (let ((url (get-text-property (point) 'shrface-url)))
-        (kill-new url)
-        (message (concat "URL copied: " url))))))
-
-(defun shrface-mouse-3 (event)
-  "Browser the url click on.
-Argument EVENT mouse event."
-  (interactive "e")
-  ;; (message "click mouse-3")
-  (let ((window (posn-window (event-end event)))
-        (pos (posn-point (event-end event))))
-    (if (not (windowp window))
-        (error "No URL chosen"))
-    (with-current-buffer (window-buffer window)
-      (goto-char pos)
-      (browse-url (get-text-property (point) 'shrface-url)))))
 
 (defun shrface-ret ()
   "Goto url under point."
@@ -1040,259 +773,6 @@ DELAY the flash delay"
     (add-hook 'pre-command-hook #'compilation-goto-locus-delete-o)
     (setq next-error-highlight-timer
           (run-at-time delay nil #'compilation-goto-locus-delete-o))))
-
-(defun shrface-links-selectable-list ()
-  "Return a fontified selecable url list in order.
-It will be used in ivy counsel."
-  (nreverse (mapcar #'(lambda (x)
-                        (let* ((item x)
-                               (title (car item))
-                               (url (nth 1 item))
-                               (beg (nth 2 item))
-                               (end (nth 3 item)))
-                          (list (format
-                                 "%s\t%s"
-                                 ;; insert icons will slow the list to be shown
-                                 ;; (propertize
-                                 ;;  (if (fboundp 'all-the-icons-icon-for-url)
-                                 ;;      (all-the-icons-icon-for-url url :height 1.1)
-                                 ;;    ""))
-                                 (propertize title 'face 'shrface-links-title-face)
-                                 (propertize url 'face 'shrface-links-url-face)) beg end)))
-                    (shrface-href-collect-all-ordered))))
-
-(defun shrface-links-counsel ()
-  "Use counsel to present all urls in order founded in the buffer.
-Next url will be the one of the candidates to initially select,
-so that you would not lost if you call \\[ivy-call],
-\\[ivy-next-line-and-call] or \\[ivy-previous-line-and-call] to
-jump around the list."
-  (interactive)
-  (let ((start (point)) next url)
-    ;; get the next nearest url
-    (setq next (text-property-not-all
-                (point) (point-max) shrface-href-follow-link-property nil))
-    ;; only if the next url exists
-    (if next
-      (setq url (get-text-property next shrface-href-property)))
-    (if (fboundp 'ivy-read)
-        (ivy-read "shrface-links: " (shrface-links-selectable-list)
-                  :action (lambda (x)
-                            (remove-overlays)
-                            (let ((beg (nth 1 x))
-                                  (end (nth 2 x)) xx)
-                              (goto-char beg)
-                              (setq xx (make-overlay beg end))
-                              (overlay-put xx 'face 'shrface-highlight)
-                              (cond ((memq this-command '(ivy-done
-                                                          ivy-alt-done
-                                                          ivy-immediate-done))
-                                     (remove-overlays)))))
-                  :preselect url
-                  :require-match t
-                  :unwind (lambda ()
-                            (remove-overlays)
-                            (if (get-buffer "*shrface-links*")
-                                (kill-buffer "*shrface-links*"))
-                            (goto-char start))
-                  :sort nil
-                  :caller 'shrface-links-counsel)
-      (message "Please install 'counsel' before using 'shrface-links-counsel'"))))
-
-(defun shrface-links-helm ()
-  "Use helm to present all urls in order founded in the buffer."
-  (interactive)
-  (let (result)
-    (if (fboundp 'helm-comp-read)
-        (progn
-          (setq result (helm-comp-read
-                      "shrface-headline: " (shrface-links-selectable-list)
-                      :persistent-action
-                      (lambda (candidate)
-                        (goto-char (nth 0 candidate))
-                        (if (fboundp 'helm-highlight-current-line)
-                            (helm-highlight-current-line)))))
-          (goto-char (nth 0 result)))
-      (message "Please enable 'helm-mode' before using 'shrface-headline-helm'"))))
-
-(defun shrface-links-counsel-set-actions ()
-  "Set actions for function `shrface-links-counsel' when call \\[ivy-occur]."
-  (if (fboundp 'ivy-set-actions)
-      (ivy-set-actions
-       'shrface-links-counsel
-       '(("v"
-          (lambda (res)
-            (eww-browse-url (nth 0 res)))  "eww browse url")))))
-
-;;; shrface-analysis
-;; `shrface-headline'
-
-(defun shrface-headline-collect-all-ordered ()
-  "Collect all positions of headlines in the current buffer in order.
-The value of the `shrface-headline-collected-list' is returned."
-  (setq shrface-headline-collected-list nil) ; TODO use local list instead
-  (let ((buf-name "*shrface-headline*") occur-buf)
-    (setq occur-buf (get-buffer-create buf-name))
-    (with-current-buffer occur-buf
-      (read-only-mode -1)
-      (shrface-regexp)
-      (erase-buffer))
-    (shrface-collect shrface-headline-property shrface-headline-property "Headline" occur-buf shrface-headline-collected-list)))
-
-(defun shrface-headline-selectable-list ()
-  "Return a fontified selecable headline list in order.
-It will be used in ivy counsel."
-  (nreverse (mapcar #'(lambda (x)
-                        (let* ((item x)
-                               (title (car item))
-                               (url (nth 1 item))
-                               (beg (nth 2 item))
-                               (end (nth 3 item)))
-                          (list (format
-                                 "%s"
-                                 ;; insert icons will slow the list to be shown
-                                 ;; (propertize
-                                 ;;  (if (fboundp 'all-the-icons-icon-for-url)
-                                 ;;      (all-the-icons-icon-for-url url :height 1.1)
-                                 ;;    ""))
-                                 ;; (propertize title 'face 'shrface-links-title-face)
-                                 (cond
-                                  ((equal "shrface-h1" url) (propertize title 'face 'shrface-h1-face))
-                                  ((equal "shrface-h2" url) (propertize (concat " " title) 'face 'shrface-h2-face))
-                                  ((equal "shrface-h3" url) (propertize (concat "  " title) 'face 'shrface-h3-face))
-                                  ((equal "shrface-h4" url) (propertize (concat "   " title) 'face 'shrface-h4-face))
-                                  ((equal "shrface-h5" url) (propertize (concat "     " title) 'face 'shrface-h5-face))
-                                  ((equal "shrface-h6" url) (propertize (concat "      " title) 'face 'shrface-h6-face)))) beg end)))
-                    (shrface-headline-collect-all-ordered))))
-
-(defun shrface-headline-counsel ()
-  "Use counsel to show all headlines in order founded in the buffer.
-Current headline will be the one of the candidates to initially select,
-so that you would not lost if you call \\[ivy-call],
-\\[ivy-next-line-and-call] or \\[ivy-previous-line-and-call] to
-jump around the list."
-  (interactive)
-  (let ((current (point-min)) (start (1+ (point))) point number)
-    ;; Scan from point-min to (1+ (point)) to find the current headline.
-    ;; (1+ (point)) to include under current point headline into the scan range.
-    (unless (> start (point-max))
-        (while (setq point (text-property-not-all
-                            current start shrface-headline-number-property nil))
-          (setq current (1+ point))))
-
-    (cond ((equal (point) 1) (setq number 0))
-          ((equal (point) 2) (setq number 0))
-          ((equal (point) (point-max)) (setq number 0))
-          (t
-           (ignore-errors (setq number (1- (get-text-property (1- current) shrface-headline-number-property))))))
-
-    ;; Start the ivy-read
-    (setq start (point)) ; save the starting point
-    (if (fboundp 'ivy-read)
-        (ivy-read "shrface-headline: " (shrface-headline-selectable-list)
-                  :action (lambda (x)
-                            (remove-overlays)
-                            (let ((beg (nth 1 x))
-                                  (end (nth 2 x)) xx)
-                              (goto-char beg)
-                              (recenter nil)
-                              (setq xx (make-overlay beg end))
-                              (overlay-put xx 'face 'shrface-highlight)
-                              (cond ((memq this-command '(ivy-done
-                                                          ivy-alt-done
-                                                          ivy-immediate-done))
-                                     (remove-overlays)))))
-                  :preselect number
-                  :require-match t
-                  :unwind (lambda ()
-                            (remove-overlays)
-                            (if (get-buffer "*shrface-headline*")
-                                (kill-buffer "*shrface-headline*"))
-                            (goto-char start))
-                  :sort nil
-                  :caller 'shrface-headline-counsel)
-      (message "Please install 'counsel' before using 'shrface-headline-counsel'"))))
-
-(defun shrface-headline-helm ()
-  "Use helm to show all headlines in order founded in the buffer."
-  (interactive)
-  (let (result)
-    (if (fboundp 'helm-comp-read)
-        (progn
-          (setq result (helm-comp-read
-                      "shrface-headline: " (shrface-headline-selectable-list)
-                      :persistent-action
-                      (lambda (candidate)
-                        (goto-char (car candidate))
-                        (if (fboundp 'helm-highlight-current-line)
-                            (helm-highlight-current-line)))))
-          (goto-char (car result))
-          (recenter nil))
-      (message "Please enable 'helm-mode' before using 'shrface-headline-helm'"))))
-
-(defun shrface-previous-headline ()
-  "Jump to previous headline."
-  (interactive)
-  (let ((location (get-text-property (point) shrface-headline-number-property)) previous)
-    (cond
-     ;; check the current point headline number first
-     ((numberp location)
-      (setq previous (text-property-any (point-min) (point-max) shrface-headline-number-property (1- location)))
-      (if (numberp previous)
-          (goto-char previous)
-        (goto-char (point-min))))
-     ;; check the current point if >= the first header (no matter level), keep (point) if no headlines
-     ((>= (or (text-property-not-all (point-min) (point-max) shrface-headline-number-property nil) (point)) (point))
-      (message "Beginning of buffer")
-      (goto-char (point-min)))
-     (t
-      (let ((current (point-min)) (start (1+ (point))) point number)
-        ;; Scan from point-min to (1+ (point)) to find the current headline.
-        ;; (1+ (point)) to include under current point headline into the scan range.
-        (if (<= start (point-max))
-            (while (setq point (text-property-not-all
-                                current start shrface-headline-number-property nil))
-              (setq current (1+ point))) ; not at (point-max)
-          (while (setq point (text-property-not-all
-                              current (point-max) shrface-headline-number-property nil))
-            (setq current (1+ point)))) ; at the (point-max)
-        (setq number (1- (get-text-property (1- current) shrface-headline-number-property)))
-        (goto-char (text-property-any (point-min) (point-max) shrface-headline-number-property (1+ number))))))))
-
-(defun shrface-next-headline ()
-  "Jump to next headline."
-  (interactive)
-  (let* ((header-in-line (text-property-not-all (line-beginning-position) (line-end-position) shrface-headline-number-property nil))
-         (location (get-text-property (or header-in-line (point)) shrface-headline-number-property))
-         next)
-    (cond
-     ;; check the current line headline number first, since if use org-cycle, cursor will go to the begining of line
-     ((numberp location)
-      (setq next (text-property-any (point-min) (point-max) shrface-headline-number-property (1+ location)))
-      (if (numberp next)
-          (goto-char next)
-        (goto-char (point-max))))
-     ;; check the current point if >= the first header (no matter level), keep (point) if no headlines
-     ((>= (setq next (or (text-property-not-all (point-min) (point-max) shrface-headline-number-property nil) (point))) (point))
-      (if (equal next (point))
-          (progn
-            (message "End of buffer")
-            (goto-char (point-max)) )
-        (goto-char next)))
-     (t
-      (let ((current (point-min)) (start (1+ (point))) point number)
-        ;; Scan from point-min to (1+ (point)) to find the current headline.
-        ;; (1+ (point)) to include under current point headline into the scan range.
-        (unless (> start (point-max))
-          (while (setq point (text-property-not-all
-                              current start shrface-headline-number-property nil))
-            (setq current (1+ point))))
-        (cond ((equal (point) 1) (setq number 0))
-              ((equal (point) 2) (setq number 0))
-              ((equal (point) (point-max)) (setq number (point-max)) (message "End of buffer"))
-              (t
-               (setq number (1- (get-text-property (1- current) shrface-headline-number-property)))))
-        (goto-char (or (text-property-any (point-min) (point-max) shrface-headline-number-property (+ 2 number)) (point-max))))))))
 
 (provide 'shrface)
 ;;; shrface.el ends here
